@@ -3,6 +3,7 @@ let config_JSON, 反代IP = '', 启用SOCKS5反代 = null, 启用SOCKS5全局反
 let 缓存SOCKS5白名单 = null, 缓存反代IP, 缓存反代解析数组, 缓存反代数组索引 = 0, 启用反代兜底 = true, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const IP国家缓存 = new Map();
+const IP国家缓存前缀 = 'geoip:';
 const 中文地区名称 = typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function' ? new Intl.DisplayNames(['zh-CN'], { type: 'region' }) : null;
 const Pages静态页面 = 'https://edt-pages.github.io';
 ///////////////////////////////////////////////////////全局常量和工具函数///////////////////////////////////////////////
@@ -400,21 +401,14 @@ export default {
 							const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
 							const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
 							const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
+							await 预热IP国家缓存(完整优选IP, env.KV);
 							订阅内容 = 其他节点LINK + (await Promise.all(完整优选IP.map(async 原始地址 => {
-								// 统一正则: 匹配 域名/IPv4/IPv6地址 + 可选端口 + 可选备注
-								// 示例:
-								//   - 域名: hj.xmm1993.top:2096#备注 或 example.com
-								//   - IPv4: 166.0.188.128:443#Los Angeles 或 166.0.188.128
-								//   - IPv6: [2606:4700::]:443#CMCC 或 [2606:4700::]
-								const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
-								const match = 原始地址.match(regex);
-
+								const 节点信息 = 解析节点地址信息(原始地址);
 								let 节点地址, 节点端口 = "443", 节点备注;
-
-								if (match) {
-									节点地址 = match[1];  // IP地址或域名(可能带方括号)
-									节点端口 = match[2] ? match[2] : '443';  // 端口默认443，SS noTLS在生成链接时再映射
-									节点备注 = match[3] || 节点地址;  // 备注,默认为地址本身
+								if (节点信息) {
+									节点地址 = 节点信息.节点地址;
+									节点端口 = 节点信息.节点端口;
+									节点备注 = 节点信息.节点备注;
 								} else {
 									// 不规范的格式，跳过处理返回null
 									console.warn(`[订阅内容] 不规范的IP格式已忽略: ${原始地址}`);
@@ -437,7 +431,7 @@ export default {
 									const 匹配到的反代IP = 反代IP池.find(p => p.includes(节点地址));
 									if (匹配到的反代IP) 完整节点路径 = (`${config_JSON.PATH}/proxyip=${匹配到的反代IP}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT ? '?ed=2560' : '');
 								}
-								节点备注 = await 格式化节点备注附加国家(节点备注, 节点地址);
+								节点备注 = await 格式化节点备注附加国家(节点备注, 节点地址, host => 获取IP国家名称(host, env.KV));
 								if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
 
 								if (协议类型 === 'ss' && !作为优选订阅生成器) {
@@ -3406,25 +3400,110 @@ function 获取国家中文名(国家代码 = '', 回退名称 = '') {
 	return String(回退名称 || '').trim();
 }
 
-async function 获取IP国家名称(hostname = '', geoFetcher = fetch) {
+function 获取IP国家缓存键(hostname = '') {
+	return `${IP国家缓存前缀}${stripIPv6Brackets(hostname)}`;
+}
+
+function 解析节点地址信息(原始地址 = '') {
+	const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
+	const match = String(原始地址 || '').trim().match(regex);
+	if (!match) return null;
+	return { 节点地址: match[1], 节点端口: match[2] || '443', 节点备注: match[3] || match[1] };
+}
+
+async function 查询单个IP国家名称(hostname = '', geoFetcher = fetch) {
+	const host = stripIPv6Brackets(hostname);
+	const providers = [
+		{
+			url: `http://ip-api.com/json/${encodeURIComponent(host)}?fields=status,country,countryCode`,
+			parse(payload) {
+				return payload?.status === 'success' ? 获取国家中文名(payload.countryCode, payload.country) : '';
+			}
+		},
+		{
+			url: `https://ipwhois.app/json/${encodeURIComponent(host)}`,
+			parse(payload) {
+				return payload?.success ? 获取国家中文名(payload.country_code, payload.country) : '';
+			}
+		}
+	];
+	for (const provider of providers) {
+		try {
+			const response = await geoFetcher(provider.url, {
+				headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' }
+			});
+			if (!response.ok) continue;
+			const payload = await response.json();
+			const countryName = provider.parse(payload);
+			if (countryName) return countryName;
+		} catch (_) { }
+	}
+	return '';
+}
+
+async function 预热IP国家缓存(原始地址列表 = [], kvStore = null, geoFetcher = fetch) {
+	const 去重IP列表 = [];
+	for (const 原始地址 of 原始地址列表) {
+		const 解析结果 = 解析节点地址信息(原始地址);
+		if (!解析结果 || !isIPHostname(解析结果.节点地址)) continue;
+		const host = stripIPv6Brackets(解析结果.节点地址);
+		if (!去重IP列表.includes(host)) 去重IP列表.push(host);
+	}
+	if (去重IP列表.length === 0) return;
+
+	const 待查IP列表 = [];
+	for (const host of 去重IP列表) {
+		const 内存缓存 = IP国家缓存.get(host);
+		if (内存缓存 !== undefined) continue;
+		if (kvStore && typeof kvStore.get === 'function') {
+			const kv缓存 = await kvStore.get(获取IP国家缓存键(host));
+			if (typeof kv缓存 === 'string' && kv缓存) {
+				IP国家缓存.set(host, kv缓存);
+				continue;
+			}
+		}
+		待查IP列表.push(host);
+	}
+	if (待查IP列表.length === 0) return;
+
+	try {
+		const response = await geoFetcher('http://ip-api.com/batch?fields=status,country,countryCode', {
+			method: 'POST',
+			headers: {
+				'Accept': 'application/json',
+				'Content-Type': 'application/json',
+				'User-Agent': 'Mozilla/5.0'
+			},
+			body: JSON.stringify(待查IP列表.map(query => ({ query })))
+		});
+		if (!response.ok) throw new Error(`HTTP ${response.status}`);
+		const payload = await response.json();
+		for (let index = 0; index < 待查IP列表.length; index++) {
+			const host = 待查IP列表[index];
+			const item = Array.isArray(payload) ? payload[index] : null;
+			const countryName = item?.status === 'success' ? 获取国家中文名(item.countryCode, item.country) : '';
+			IP国家缓存.set(host, countryName);
+			if (countryName && kvStore && typeof kvStore.put === 'function') await kvStore.put(获取IP国家缓存键(host), countryName);
+		}
+		return;
+	} catch (error) {
+		console.warn(`[订阅内容] 批量IP国家查询失败，将回退单个查询 (${error && error.message ? error.message : error})`);
+	}
+
+	for (const host of 待查IP列表) {
+		const countryName = await 查询单个IP国家名称(host, geoFetcher);
+		IP国家缓存.set(host, countryName);
+		if (countryName && kvStore && typeof kvStore.put === 'function') await kvStore.put(获取IP国家缓存键(host), countryName);
+	}
+}
+
+async function 获取IP国家名称(hostname = '', kvStore = null, geoFetcher = fetch) {
 	const host = stripIPv6Brackets(hostname);
 	if (!isIPHostname(host)) return '';
 	const cachedCountry = IP国家缓存.get(host);
 	if (cachedCountry !== undefined) return cachedCountry;
-	try {
-		const response = await geoFetcher(`https://ipwhois.app/json/${encodeURIComponent(host)}`, {
-			headers: { 'Accept': 'application/json' }
-		});
-		if (!response.ok) throw new Error(`HTTP ${response.status}`);
-		const payload = await response.json();
-		const countryName = payload?.success ? 获取国家中文名(payload.country_code, payload.country) : '';
-		IP国家缓存.set(host, countryName);
-		return countryName;
-	} catch (error) {
-		console.warn(`[订阅内容] IP国家查询失败: ${host} (${error && error.message ? error.message : error})`);
-		IP国家缓存.set(host, '');
-		return '';
-	}
+	await 预热IP国家缓存([host], kvStore, geoFetcher);
+	return IP国家缓存.get(host) || '';
 }
 
 async function 格式化节点备注附加国家(节点备注, 节点地址, 国家解析器 = 获取IP国家名称) {
@@ -6000,4 +6079,4 @@ async function html1101(host, 访问IP) {
 </html>`;
 }
 
-export { 获取IP国家名称, 格式化节点备注附加国家 };
+export { 获取IP国家名称, 格式化节点备注附加国家, 预热IP国家缓存 };
