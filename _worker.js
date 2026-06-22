@@ -2,6 +2,8 @@
 let config_JSON, 反代IP = '', 启用SOCKS5反代 = null, 启用SOCKS5全局反代 = false, 我的SOCKS5账号 = '', parsedSocks5Address = {};
 let 缓存SOCKS5白名单 = null, 缓存反代IP, 缓存反代解析数组, 缓存反代数组索引 = 0, 启用反代兜底 = true, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
+const IP国家缓存 = new Map();
+const 中文地区名称 = typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function' ? new Intl.DisplayNames(['zh-CN'], { type: 'region' }) : null;
 const Pages静态页面 = 'https://edt-pages.github.io';
 ///////////////////////////////////////////////////////全局常量和工具函数///////////////////////////////////////////////
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
@@ -398,7 +400,7 @@ export default {
 							const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
 							const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
 							const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
-							订阅内容 = 其他节点LINK + 完整优选IP.map(原始地址 => {
+							订阅内容 = 其他节点LINK + (await Promise.all(完整优选IP.map(async 原始地址 => {
 								// 统一正则: 匹配 域名/IPv4/IPv6地址 + 可选端口 + 可选备注
 								// 示例:
 								//   - 域名: hj.xmm1993.top:2096#备注 或 example.com
@@ -435,6 +437,7 @@ export default {
 									const 匹配到的反代IP = 反代IP池.find(p => p.includes(节点地址));
 									if (匹配到的反代IP) 完整节点路径 = (`${config_JSON.PATH}/proxyip=${匹配到的反代IP}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT ? '?ed=2560' : '');
 								}
+								节点备注 = await 格式化节点备注附加国家(节点备注, 节点地址);
 								if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
 
 								if (协议类型 === 'ss' && !作为优选订阅生成器) {
@@ -450,7 +453,7 @@ export default {
 									const 传输路径参数值 = 获取传输路径参数值(config_JSON, 完整节点路径, 作为优选订阅生成器);
 									return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none#${encodeURIComponent(节点备注)}`;
 								}
-							}).filter(item => item !== null).join('\n');
+							}))).filter(item => item !== null).join('\n');
 						} else { // 订阅转换
 							const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 今日订阅转换后端专属TOKEN + '&cnIspCode=' + 识别运营商(request) + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : ''))}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&list=${config_JSON.订阅转换配置.SUBLIST}&scv=${config_JSON.跳过证书验证}`;
 							try {
@@ -3394,6 +3397,43 @@ function isIPHostname(hostname = '') {
 	}
 }
 
+function 获取国家中文名(国家代码 = '', 回退名称 = '') {
+	const code = String(国家代码 || '').trim().toUpperCase();
+	if (code && 中文地区名称) {
+		const 中文名 = 中文地区名称.of(code);
+		if (中文名 && 中文名 !== code) return 中文名;
+	}
+	return String(回退名称 || '').trim();
+}
+
+async function 获取IP国家名称(hostname = '', geoFetcher = fetch) {
+	const host = stripIPv6Brackets(hostname);
+	if (!isIPHostname(host)) return '';
+	const cachedCountry = IP国家缓存.get(host);
+	if (cachedCountry !== undefined) return cachedCountry;
+	try {
+		const response = await geoFetcher(`https://ipwhois.app/json/${encodeURIComponent(host)}`, {
+			headers: { 'Accept': 'application/json' }
+		});
+		if (!response.ok) throw new Error(`HTTP ${response.status}`);
+		const payload = await response.json();
+		const countryName = payload?.success ? 获取国家中文名(payload.country_code, payload.country) : '';
+		IP国家缓存.set(host, countryName);
+		return countryName;
+	} catch (error) {
+		console.warn(`[订阅内容] IP国家查询失败: ${host} (${error && error.message ? error.message : error})`);
+		IP国家缓存.set(host, '');
+		return '';
+	}
+}
+
+async function 格式化节点备注附加国家(节点备注, 节点地址, 国家解析器 = 获取IP国家名称) {
+	if (!isIPHostname(节点地址)) return 节点备注;
+	const 国家名 = await 国家解析器(节点地址);
+	if (!国家名 || 节点备注.startsWith(`${国家名} | `)) return 节点备注;
+	return `${国家名} | ${节点备注}`;
+}
+
 //////////////////////////////////////////////////turnConnect///////////////////////////////////////////////
 const CONNECT_TIMEOUT_MS = 9999;
 const TURN_STUN_MAGIC_COOKIE = new Uint8Array([0x21, 0x12, 0xa4, 0x42]);
@@ -5959,3 +5999,5 @@ async function html1101(host, 访问IP) {
 </body>
 </html>`;
 }
+
+export { 获取IP国家名称, 格式化节点备注附加国家 };
