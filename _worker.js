@@ -4178,7 +4178,7 @@ function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON 
 	const gRPCUserAgent = (typeof config_JSON?.gRPCUserAgent === 'string' && config_JSON.gRPCUserAgent.trim()) ? config_JSON.gRPCUserAgent.trim() : null;
 	const 需要处理gRPC = config_JSON?.传输协议 === "grpc" && Boolean(gRPCUserAgent);
 	const gRPCUserAgentYAML = gRPCUserAgent ? JSON.stringify(gRPCUserAgent) : null;
-	const 香港券商Clash规则 = [
+	const 自定义站点Clash规则 = [
 		'  - DOMAIN-SUFFIX,futuhk.com,🚀 节点选择',
 		'  - DOMAIN-SUFFIX,futunn.com,🚀 节点选择',
 		'  - DOMAIN-SUFFIX,moomoo.com,🚀 节点选择',
@@ -4204,6 +4204,8 @@ function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON 
 		'  - DOMAIN-KEYWORD,snowballx,🚀 节点选择',
 		'  - DOMAIN-KEYWORD,xueqiu,🚀 节点选择',
 		'  - DOMAIN-KEYWORD,xueying,🚀 节点选择',
+		'  - DOMAIN-SUFFIX,4aicode.com,🎯 全球直连',
+		'  - DOMAIN-KEYWORD,4aicode,🎯 全球直连',
 	];
 	let clash_yaml = Clash_原始订阅内容.replace(/mode:\s*Rule\b/g, 'mode: rule');
 
@@ -4350,11 +4352,11 @@ function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON 
 	}
 
 	if (!clash_yaml.includes('DOMAIN-SUFFIX,futuhk.com,🚀 节点选择')) {
-		const 香港券商规则块 = 香港券商Clash规则.join('\n') + '\n';
+		const 自定义站点规则块 = 自定义站点Clash规则.join('\n') + '\n';
 		if (/^rules:\s*(?:\n|$)/m.test(clash_yaml)) {
-			clash_yaml = clash_yaml.replace(/^rules:\s*(?:\n|$)/m, `rules:\n${香港券商规则块}`);
+			clash_yaml = clash_yaml.replace(/^rules:\s*(?:\n|$)/m, `rules:\n${自定义站点规则块}`);
 		} else {
-			clash_yaml += `${clash_yaml.endsWith('\n') ? '' : '\n'}rules:\n${香港券商规则块}`;
+			clash_yaml += `${clash_yaml.endsWith('\n') ? '' : '\n'}rules:\n${自定义站点规则块}`;
 		}
 	}
 
